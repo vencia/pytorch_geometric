@@ -21,7 +21,7 @@ from .normalize_features import NormalizeFeatures
 from .add_self_loops import AddSelfLoops
 from .knn_graph import KNNGraph
 from .radius_graph import RadiusGraph
-from .face_to_edge import FaceToEdge
+from .face_to_edge import FaceToEdge, FaceToEdgeWithLabels
 from .sample_points import SamplePoints
 from .to_dense import ToDense
 from .two_hop import TwoHop
