@@ -8,6 +8,8 @@ import torch_geometric.transforms as T
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GCNConv
 
+NUM_CLASSES = 4
+
 
 class CalcEdgeAttributesTransform(object):
     def __call__(self, data):
@@ -57,18 +59,66 @@ class CalcEdgeAttributesTransform(object):
         return data
 
 
-NUM_CLASSES = 4
-data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
-pred_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases', 'prediction')
-gt_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases', 'gt')
-os.makedirs(pred_path, exist_ok=True)
-os.makedirs(gt_path, exist_ok=True)
-pre_transform = T.Compose(
-    [T.NormalizeScale(), T.FaceToEdgeWithLabels(remove_faces=False), CalcEdgeAttributesTransform()])
-train_dataset = COSEG(data_path, train=True, pre_transform=pre_transform)
-test_dataset = COSEG(data_path, train=False, pre_transform=pre_transform)
-train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=1)
+def main():
+    data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
+    output_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases', 'meshes')
+    # pred_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases', 'prediction')
+    # gt_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases', 'gt')
+    # os.makedirs(pred_path, exist_ok=True)
+    os.makedirs(output_path, exist_ok=True)
+    # os.makedirs(gt_path, exist_ok=True)
+    pre_transform = T.Compose(
+        [T.NormalizeScale(), T.FaceToEdgeWithLabels(remove_faces=False), CalcEdgeAttributesTransform()])
+    train_dataset = COSEG(data_path, train=True, pre_transform=pre_transform)
+    test_dataset = COSEG(data_path, train=False, pre_transform=pre_transform)
+    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=1)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = Net().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
+
+    for epoch in range(1, 20):
+        train_acc = train(model, device, optimizer, train_loader)
+        test_acc = test(model, device, test_loader)
+        print('Epoch: {:02d}, Train: {:.4f}, Test: {:.4f}'.format(epoch, train_acc, test_acc))
+
+    for data in train_loader:
+        predict(model, device, data, output_path)
+    for data in test_loader:
+        predict(model, device, data, output_path)
+
+
+def export_colored_mesh(data, labels, output_path):
+    def get_color(label):
+        if label == 0:
+            return ['0.0', '0.0', '1.0', '1.0']
+        elif label == 1:
+            return ['0.0', '1.0', '0.0', '1.0']
+        elif label == 2:
+            return ['1.0', '0.0', '0.0', '1.0']
+        else:
+            assert label == 3
+            return ['1.0', '1.0', '0.0', '1.0']
+
+    vertices = data.pos.cpu().numpy()
+    edges = data.edge_index.t().cpu().numpy()
+    faces = data.face.t().cpu().numpy()
+    edge_labels = labels.cpu().numpy()
+
+    # edge labels to face labels
+    face_labels = []
+    for face in faces:
+        l = edge_labels[np.nonzero(np.all(edges == [face[0], face[1]], axis=1))[0][0]]
+        face_labels.append(l)
+
+    # write off file
+    lines = ['OFF']
+    lines.append('{} {} {}'.format(len(vertices), len(faces), len(edges)))
+    lines += [' '.join(str(y) for y in x) for x in vertices]
+    lines += [' '.join(['3'] + [str(y) for y in x] + get_color(l)) for x, l in zip(faces, face_labels)]
+    with open(output_path, 'w') as f:
+        f.write('\n'.join(lines))
 
 
 class Net(torch.nn.Module):
@@ -84,22 +134,22 @@ class Net(torch.nn.Module):
         return x
 
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = Net().to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-
-
-def train():
+def train(model, device, optimizer, train_loader):
     model.train()
+    correct = 0
+
     for data in train_loader:
         optimizer.zero_grad()
         logits = model(data.to(device))
+        pred_class = logits.max(dim=-1)[1]
+        correct += pred_class.eq(data.y).sum().item() / data.num_edges
         pred = F.log_softmax(logits, dim=-1)
         F.nll_loss(pred, data.y).backward()
         optimizer.step()
+    return correct / len(train_loader)
 
 
-def test():
+def test(model, device, test_loader):
     model.eval()
     correct = 0
 
@@ -107,28 +157,21 @@ def test():
         logits = model(data.to(device))
         pred_class = logits.max(dim=-1)[1]
         correct += pred_class.eq(data.y).sum().item() / data.num_edges
-    return correct / len(test_dataset)
+    return correct / len(test_loader)  # len(test_dataset)
 
 
-def predict(data):
+def predict(model, device, data, output_path):
     model.eval()
     logits = model(data.to(device))
-    export_labels(data, logits.max(dim=-1)[1], pred_path)
-    export_labels(data, data.y, gt_path)
+    export_colored_mesh(data, data.y, output_path + '/' + str(data.shape_id.item()) + '_gt.off')
+    export_colored_mesh(data, logits.max(dim=-1)[1], output_path + '/' + str(data.shape_id.item()) + '_pred.off')
 
 
-def export_labels(data, pred, path):
-    pred_class = [str(x.item() + 1) for x in pred]
-    with open(path + '/' + str(data.shape_id.item()) + '.seg', 'w') as f:
-        f.write('\n'.join(pred_class))
+# def export_labels(data, labels, path):
+#     pred_class = [str(x.item() + 1) for x in labels]
+#     with open(path + '/' + str(data.shape_id.item()) + '.seg', 'w') as f:
+#         f.write('\n'.join(pred_class))
 
 
-for epoch in range(1, 20):
-    train()
-    test_acc = test()
-    print('Epoch: {:02d}, Test: {:.4f}'.format(epoch, test_acc))
-
-for data in train_loader:
-    predict(data)
-for data in test_loader:
-    predict(data)
+if __name__ == '__main__':
+    main()
