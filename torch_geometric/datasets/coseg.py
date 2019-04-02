@@ -46,11 +46,9 @@ class COSEG(InMemoryDataset):
             data = read_off(off_path)
             shape_id = osp.basename(off_path).rsplit('.', 1)[0]
             label_path = osp.join(self.raw_paths[1], shape_id + '.seg')
-            data.y = read_txt_array(label_path, dtype=torch.uint8)
-            # data.shape_id = int(shape_id)
+            data.y = read_txt_array(label_path)
+            data.shape_id = torch.tensor([int(shape_id)])
             data_list.append(data)
-            if len(data_list) == 3:  # TODO: change back
-                break
 
         if self.pre_filter is not None:
             data_list = [d for d in data_list if self.pre_filter(d)]
@@ -58,7 +56,7 @@ class COSEG(InMemoryDataset):
         if self.pre_transform is not None:
             data_list = [self.pre_transform(d) for d in data_list]
 
-        torch.save(self.collate(data_list[:2]), self.processed_paths[0])
+        torch.save(self.collate(data_list[:2]), self.processed_paths[0])  # TODO: change back
         torch.save(self.collate(data_list[2:]), self.processed_paths[1])
 
     def __repr__(self):

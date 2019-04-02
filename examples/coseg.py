@@ -1,19 +1,19 @@
 import os.path as osp
+import os
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.datasets import COSEG
 import torch_geometric.transforms as T
 from torch_geometric.data import DataLoader
-from torch_geometric.nn import SplineConv
-from torch_geometric.utils import degree
+from torch_geometric.nn import GCNConv
 
 
 class CalcEdgeAttributesTransform(object):
     def __call__(self, data):
         edges = data.edge_index.t().contiguous()
         faces = data.face.t()
-        edge_attributes = np.empty([edges.shape[0], 5])
+        edge_attributes = np.empty([edges.shape[0], 5], dtype=np.float32)
         positions = data.pos
         for c, edge in enumerate(edges):
             print(c)
@@ -57,69 +57,78 @@ class CalcEdgeAttributesTransform(object):
         return data
 
 
-def norm(x, edge_index):
-    deg = degree(edge_index[0], x.size(0), x.dtype) + 1
-    return x / deg.unsqueeze(-1)
-
-
-path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
+NUM_CLASSES = 4
+data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
+pred_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases', 'prediction')
+gt_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases', 'gt')
+os.makedirs(pred_path, exist_ok=True)
+os.makedirs(gt_path, exist_ok=True)
 pre_transform = T.Compose(
     [T.NormalizeScale(), T.FaceToEdgeWithLabels(remove_faces=False), CalcEdgeAttributesTransform()])
-train_dataset = COSEG(path, train=True, pre_transform=pre_transform)
-# test_dataset = COSEG(path, train=False, pre_transform=pre_transform)
-# train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
-# test_loader = DataLoader(test_dataset, batch_size=1)
-# d = train_dataset[0]
+train_dataset = COSEG(data_path, train=True, pre_transform=pre_transform)
+test_dataset = COSEG(data_path, train=False, pre_transform=pre_transform)
+train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=1)
 
 
-# class Net(torch.nn.Module):
-#     def __init__(self):
-#         super(Net, self).__init__()
-#         self.conv1 = SplineConv(1, 32, dim=3, kernel_size=5, norm=False)
-#         self.conv2 = SplineConv(32, 64, dim=3, kernel_size=5, norm=False)
-#         self.fc1 = torch.nn.Linear(64, 256)
-#         self.fc2 = torch.nn.Linear(256, d.num_nodes)
-#
-#     def forward(self, data):
-#         x, edge_index, pseudo = data.x, data.edge_index, data.edge_attr
-#         x = F.elu(norm(self.conv1(x, edge_index, pseudo), edge_index))
-#         x = F.elu(norm(self.conv2(x, edge_index, pseudo), edge_index))
-#         x = F.elu(self.fc1(x))
-#         x = F.dropout(x, training=self.training)
-#         x = self.fc2(x)
-#         return F.log_softmax(x, dim=1)
-#
-#
-# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-# model = Net().to(device)
-# # target = torch.arange(d.num_edges, dtype=torch.long, device=device)
-# optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-#
-#
-# def train(epoch):
-#     model.train()
-#
-#     if epoch == 61:
-#         for param_group in optimizer.param_groups:
-#             param_group['lr'] = 0.001
-#
-#     for data in train_loader:
-#         optimizer.zero_grad()
-#         F.nll_loss(model(data.to(device)), data.y).backward()
-#         optimizer.step()
-#
-#
-# def test():
-#     model.eval()
-#     correct = 0
-#
-#     for data in test_loader:
-#         pred = model(data.to(device)).max(1)[1]
-#         correct += pred.eq(data.y).sum().item()
-#     return correct / (len(test_dataset) * d.num_edges)
-#
-#
-# for epoch in range(1, 101):
-#     train(epoch)
-#     test_acc = test()
-#     print('Epoch: {:02d}, Test: {:.4f}'.format(epoch, test_acc))
+class Net(torch.nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.conv1 = GCNConv(5, 16)
+        self.conv2 = GCNConv(16, NUM_CLASSES)
+
+    def forward(self, data):
+        edge_index, x = data.edge_index, data.edge_attr
+        x = F.relu(self.conv1(x, edge_index))
+        x = F.relu(self.conv2(x, edge_index))
+        return x
+
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = Net().to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+
+def train():
+    model.train()
+    for data in train_loader:
+        optimizer.zero_grad()
+        logits = model(data.to(device))
+        pred = F.log_softmax(logits, dim=-1)
+        F.nll_loss(pred, data.y).backward()
+        optimizer.step()
+
+
+def test():
+    model.eval()
+    correct = 0
+
+    for data in test_loader:
+        logits = model(data.to(device))
+        pred_class = logits.max(dim=-1)[1]
+        correct += pred_class.eq(data.y).sum().item() / data.num_edges
+    return correct / len(test_dataset)
+
+
+def predict(data):
+    model.eval()
+    logits = model(data.to(device))
+    export_labels(data, logits.max(dim=-1)[1], pred_path)
+    export_labels(data, data.y, gt_path)
+
+
+def export_labels(data, pred, path):
+    pred_class = [str(x.item() + 1) for x in pred]
+    with open(path + '/' + str(data.shape_id.item()) + '.seg', 'w') as f:
+        f.write('\n'.join(pred_class))
+
+
+for epoch in range(1, 20):
+    train()
+    test_acc = test()
+    print('Epoch: {:02d}, Test: {:.4f}'.format(epoch, test_acc))
+
+for data in train_loader:
+    predict(data)
+for data in test_loader:
+    predict(data)

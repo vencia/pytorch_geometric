@@ -38,11 +38,12 @@ class FaceToEdgeWithLabels(FaceToEdge):
         edge_index = to_undirected(edge_index, num_nodes=data.num_nodes)
 
         data.edge_index = edge_index
-        edge_labels = torch.zeros([edge_index.shape[1]], dtype=torch.int32)
-        for f, l in zip(face, data.y):
-            edge_labels[f[0]] = l
-            edge_labels[f[1]] = l
-            edge_labels[f[2]] = l
+        edge_labels = torch.empty([edge_index.shape[1]], dtype=torch.long)
+        for e_idx, e in enumerate(edge_index.t()):
+            for f_idx, f in enumerate(face.t()):
+                if e[0] in f and e[1] in f:
+                    edge_labels[e_idx] = data.y[f_idx] - 1
+                    break
         data.y = edge_labels
         if self.remove_faces:
             data.face = None
