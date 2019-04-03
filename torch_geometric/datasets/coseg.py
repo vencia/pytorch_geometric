@@ -58,6 +58,3 @@ class COSEG(InMemoryDataset):
 
         torch.save(self.collate(data_list[:2]), self.processed_paths[0])  # TODO: change back
         torch.save(self.collate(data_list[2:]), self.processed_paths[1])
-
-    def __repr__(self):
-        return '{}()'.format(self.__class__.__name__)

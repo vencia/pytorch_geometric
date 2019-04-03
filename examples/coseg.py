@@ -4,8 +4,9 @@ from datetime import datetime
 from tensorboardX import SummaryWriter
 import torch
 import torch.nn.functional as F
-from torch_geometric.datasets import COSEG
+from torch_geometric.datasets.coseg import COSEG
 import torch_geometric.transforms as T
+from torch_geometric.transforms.face_to_edge import FaceToEdgeWithLabels
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GCNConv
 
@@ -63,7 +64,7 @@ class CalcEdgeAttributesTransform(object):
 def main():
     data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
     pre_transform = T.Compose(
-        [T.NormalizeScale(), T.FaceToEdgeWithLabels(remove_faces=False), CalcEdgeAttributesTransform()])
+        [T.NormalizeScale(), FaceToEdgeWithLabels(remove_faces=False), CalcEdgeAttributesTransform()])
     train_dataset = COSEG(data_path, train=True, pre_transform=pre_transform)
     test_dataset = COSEG(data_path, train=False, pre_transform=pre_transform)
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
