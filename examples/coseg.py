@@ -73,6 +73,8 @@ class CalcEdgeAttributesTransform(object):
 
 def main():
     data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
+    current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+    run_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'runs', current_time)
     pre_transform = T.Compose(
         [T.NormalizeScale(), FaceToEdgeWithLabels(remove_faces=False), CalcEdgeAttributesTransform()])
     train_dataset = COSEG(data_path, train=True, pre_transform=pre_transform)
@@ -83,8 +85,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(device)
     model = Net().to(device)
-    current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-    run_path = '../runs/' + current_time
+
     train_writer = SummaryWriter(run_path + '/train')
     test_writer = SummaryWriter(run_path + '/test')
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
