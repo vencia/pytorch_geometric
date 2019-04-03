@@ -15,3 +15,4 @@ alpha/
 !docs/build/html/_modules/torch_geometric/data/
 
 .idea/
+runs/

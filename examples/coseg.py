@@ -1,6 +1,7 @@
 import os.path as osp
-import os
 import numpy as np
+from datetime import datetime
+from tensorboardX import SummaryWriter
 import torch
 import torch.nn.functional as F
 from torch_geometric.datasets import COSEG
@@ -61,12 +62,6 @@ class CalcEdgeAttributesTransform(object):
 
 def main():
     data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
-    output_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases', 'meshes')
-    # pred_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases', 'prediction')
-    # gt_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases', 'gt')
-    # os.makedirs(pred_path, exist_ok=True)
-    os.makedirs(output_path, exist_ok=True)
-    # os.makedirs(gt_path, exist_ok=True)
     pre_transform = T.Compose(
         [T.NormalizeScale(), T.FaceToEdgeWithLabels(remove_faces=False), CalcEdgeAttributesTransform()])
     train_dataset = COSEG(data_path, train=True, pre_transform=pre_transform)
@@ -76,17 +71,83 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = Net().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
+    current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+    run_path = '../runs/' + current_time
+    train_writer = SummaryWriter(run_path + '/train')
+    test_writer = SummaryWriter(run_path + '/test')
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-    for epoch in range(1, 20):
-        train_acc = train(model, device, optimizer, train_loader)
-        test_acc = test(model, device, test_loader)
-        print('Epoch: {:02d}, Train: {:.4f}, Test: {:.4f}'.format(epoch, train_acc, test_acc))
+    for epoch in range(5):
+        train_acc, train_loss = train(model, device, optimizer, train_loader)
+        train_writer.add_scalar('accuracy', train_acc, epoch)
+        train_writer.add_scalar('loss', train_loss, epoch)
+        test_acc, test_loss = test(model, device, test_loader)
+        test_writer.add_scalar('accuracy', test_acc, epoch)
+        test_writer.add_scalar('loss', test_loss, epoch)
+        print('epoch: {:04d}, train acc: {:.4f}, test acc: {:.4f}'.format(epoch + 1, train_acc, test_acc))
+
+    train_writer.close()
+    test_writer.close()
 
     for data in train_loader:
-        predict(model, device, data, output_path)
+        predict(model, device, data, run_path + '/train')
     for data in test_loader:
-        predict(model, device, data, output_path)
+        predict(model, device, data, run_path + '/test')
+
+
+class Net(torch.nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.conv1 = GCNConv(5, 16)
+        self.conv2 = GCNConv(16, 64)
+        self.conv3 = GCNConv(64, NUM_CLASSES)
+
+    def forward(self, data):
+        edge_index, x = data.edge_index, data.edge_attr
+        x = F.relu(self.conv1(x, edge_index))
+        x = F.relu(self.conv2(x, edge_index))
+        x = F.log_softmax(self.conv3(x, edge_index), dim=-1)
+        return x
+
+
+def train(model, device, optimizer, train_loader):
+    model.train()
+    correct = 0
+    loss = 0
+
+    for data in train_loader:
+        optimizer.zero_grad()
+        pred = model(data.to(device))
+        pred_class = pred.max(dim=-1)[1]
+        correct += pred_class.eq(data.y).sum().item() / data.num_edges
+        output = F.nll_loss(pred, data.y)
+        loss += output.item()
+        output.backward()
+        optimizer.step()
+    return correct / len(train_loader), loss / len(train_loader)
+
+
+def test(model, device, test_loader):
+    model.eval()
+    correct = 0
+    loss = 0
+
+    for data in test_loader:
+        pred = model(data.to(device))
+        pred_class = pred.max(dim=-1)[1]
+        correct += pred_class.eq(data.y).sum().item() / data.num_edges
+        output = F.nll_loss(pred, data.y)
+        loss += output.item()
+
+    return correct / len(test_loader), loss / len(test_loader)
+
+
+def predict(model, device, data, output_path):
+    model.eval()
+    pred = model(data.to(device))
+    pred_class = pred.max(dim=-1)[1]
+    export_colored_mesh(data, data.y, output_path + '/' + str(data.shape_id.item()) + '_gt.off')
+    export_colored_mesh(data, pred_class, output_path + '/' + str(data.shape_id.item()) + '_pred.off')
 
 
 def export_colored_mesh(data, labels, output_path):
@@ -121,56 +182,10 @@ def export_colored_mesh(data, labels, output_path):
         f.write('\n'.join(lines))
 
 
-class Net(torch.nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.conv1 = GCNConv(5, 16)
-        self.conv2 = GCNConv(16, NUM_CLASSES)
-
-    def forward(self, data):
-        edge_index, x = data.edge_index, data.edge_attr
-        x = F.relu(self.conv1(x, edge_index))
-        x = F.relu(self.conv2(x, edge_index))
-        return x
-
-
-def train(model, device, optimizer, train_loader):
-    model.train()
-    correct = 0
-
-    for data in train_loader:
-        optimizer.zero_grad()
-        logits = model(data.to(device))
-        pred_class = logits.max(dim=-1)[1]
-        correct += pred_class.eq(data.y).sum().item() / data.num_edges
-        pred = F.log_softmax(logits, dim=-1)
-        F.nll_loss(pred, data.y).backward()
-        optimizer.step()
-    return correct / len(train_loader)
-
-
-def test(model, device, test_loader):
-    model.eval()
-    correct = 0
-
-    for data in test_loader:
-        logits = model(data.to(device))
-        pred_class = logits.max(dim=-1)[1]
-        correct += pred_class.eq(data.y).sum().item() / data.num_edges
-    return correct / len(test_loader)  # len(test_dataset)
-
-
-def predict(model, device, data, output_path):
-    model.eval()
-    logits = model(data.to(device))
-    export_colored_mesh(data, data.y, output_path + '/' + str(data.shape_id.item()) + '_gt.off')
-    export_colored_mesh(data, logits.max(dim=-1)[1], output_path + '/' + str(data.shape_id.item()) + '_pred.off')
-
-
-# def export_labels(data, labels, path):
-#     pred_class = [str(x.item() + 1) for x in labels]
-#     with open(path + '/' + str(data.shape_id.item()) + '.seg', 'w') as f:
-#         f.write('\n'.join(pred_class))
+def export_labels(data, labels, path):
+    pred_class = [str(x.item() + 1) for x in labels]
+    with open(path + '/' + str(data.shape_id.item()) + '.seg', 'w') as f:
+        f.write('\n'.join(pred_class))
 
 
 if __name__ == '__main__':
