@@ -15,44 +15,54 @@ NUM_CLASSES = 4
 
 class CalcEdgeAttributesTransform(object):
     def __call__(self, data):
+        print('shape', data.shape_id.item())
         edges = data.edge_index.t().contiguous()
         faces = data.face.t()
         edge_attributes = np.empty([edges.shape[0], 5], dtype=np.float32)
         positions = data.pos
         for c, edge in enumerate(edges):
-            print(c)
             incident_faces = [x for x in faces if edge[0] in x and edge[1] in x]
-            assert len(incident_faces) == 2
+            assert 1 <= len(incident_faces) <= 2
             r = [x for x in incident_faces[0] if x != edge[0] and x != edge[1]][0]  # other point of face a
-            s = [x for x in incident_faces[1] if x != edge[0] and x != edge[1]][0]  # other point of face b
+            s = None  # other point of face b
+            if len(incident_faces) > 1:
+                s = [x for x in incident_faces[1] if x != edge[0] and x != edge[1]][0]
 
             # calculate stable dihedral angle
             b1 = positions[r] - positions[edge[0]]
             b2 = positions[edge[1]] - positions[edge[0]]
             b2_norm = b2 / np.linalg.norm(b2)
-            b3 = positions[s] - positions[edge[1]]
-            n1 = np.cross(b1, b2)
-            n1 /= np.linalg.norm(n1)
-            n2 = np.cross(b2, b3)
-            n2 /= np.linalg.norm(n2)
-            m1 = np.cross(n1, b2_norm)
-            dihedral_angle = np.abs(np.arctan2(np.dot(m1, n2), np.dot(n1, n2)))
+            if s is not None:
+                b3 = positions[s] - positions[edge[1]]
+                n1 = np.cross(b1, b2)
+                n1 /= np.linalg.norm(n1)
+                n2 = np.cross(b2, b3)
+                n2 /= np.linalg.norm(n2)
+                m1 = np.cross(n1, b2_norm)
+                dihedral_angle = np.abs(np.arctan2(np.dot(m1, n2), np.dot(n1, n2)))
+            else:
+                dihedral_angle = 0.0
 
             # calculate inner angles and edge ratios
             inner_angles = []
             edge_ratios = []
             for p in [r, s]:
-                v1 = positions[edge[0]] - positions[p]
-                v1_norm = v1 / np.linalg.norm(v1)
-                v2 = positions[edge[1]] - positions[p]
-                v2_norm = v2 / np.linalg.norm(v2)
-                inner_angle = np.arccos(np.dot(v1_norm, v2_norm))
-                assert 0 < inner_angle < 2 * np.pi
-                inner_angles.append(inner_angle)
+                if p is not None:
+                    v1 = positions[edge[0]] - positions[p]
+                    v1_norm = v1 / np.linalg.norm(v1)
+                    v2 = positions[edge[1]] - positions[p]
+                    v2_norm = v2 / np.linalg.norm(v2)
+                    inner_angle = np.arccos(np.dot(v1_norm, v2_norm))
 
-                perpendicular_vector = -v1 - (np.dot(-v1, b2_norm) * b2_norm)
-                edge_ratio = np.linalg.norm(b2) / np.linalg.norm(perpendicular_vector)
-                edge_ratios.append(edge_ratio)
+                    assert 0 <= inner_angle <= 2 * np.pi
+                    inner_angles.append(inner_angle)
+
+                    perpendicular_vector = -v1 - (np.dot(-v1, b2_norm) * b2_norm)
+                    edge_ratio = np.linalg.norm(b2) / np.linalg.norm(perpendicular_vector)
+                    edge_ratios.append(edge_ratio)
+                else:
+                    inner_angles.append(0.0)
+                    edge_ratios.append(0.0)
 
             inner_angles = sorted(inner_angles)
             edge_ratios = sorted(edge_ratios)
@@ -71,6 +81,7 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=1)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(device)
     model = Net().to(device)
     current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     run_path = '../runs/' + current_time
@@ -78,7 +89,7 @@ def main():
     test_writer = SummaryWriter(run_path + '/test')
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-    for epoch in range(5):
+    for epoch in range(100):
         train_acc, train_loss = train(model, device, optimizer, train_loader)
         train_writer.add_scalar('accuracy', train_acc, epoch)
         train_writer.add_scalar('loss', train_loss, epoch)

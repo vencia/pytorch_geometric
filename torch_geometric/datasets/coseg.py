@@ -56,5 +56,8 @@ class COSEG(InMemoryDataset):
         if self.pre_transform is not None:
             data_list = [self.pre_transform(d) for d in data_list]
 
-        torch.save(self.collate(data_list[:2]), self.processed_paths[0])  # TODO: change back
-        torch.save(self.collate(data_list[2:]), self.processed_paths[1])
+        val_split = 0.15
+        val_size = int(len(data_list) * val_split)
+
+        torch.save(self.collate(data_list[:len(data_list) - val_size]), self.processed_paths[0])
+        torch.save(self.collate(data_list[len(data_list) - val_size:]), self.processed_paths[1])
