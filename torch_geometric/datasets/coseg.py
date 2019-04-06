@@ -16,12 +16,14 @@ class COSEG(InMemoryDataset):
     def __init__(self,
                  root,
                  name='vases',
+                 classification=None,
                  train=True,
                  transform=None,
                  pre_transform=None,
                  pre_filter=None):
         assert name in ['vases']
         self.name = name
+        self.classification = classification
         super().__init__(root, transform, pre_transform, pre_filter)
         path = self.processed_paths[0] if train else self.processed_paths[1]
         self.data, self.slices = torch.load(path)
@@ -47,6 +49,13 @@ class COSEG(InMemoryDataset):
             shape_id = osp.basename(off_path).rsplit('.', 1)[0]
             label_path = osp.join(self.raw_paths[1], shape_id + '.seg')
             data.y = read_txt_array(label_path)
+            if self.classification is not None:
+                class_label = self.classification
+                if class_label in data.y:
+                    data.y = torch.tensor([1])
+                else:
+                    data.y = torch.tensor([0])
+
             data.shape_id = torch.tensor([int(shape_id)])
             data_list.append(data)
 

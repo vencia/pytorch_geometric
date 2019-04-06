@@ -1,16 +1,15 @@
 import os.path as osp
 import numpy as np
 from datetime import datetime
+import click
 from tensorboardX import SummaryWriter
 import torch
 import torch.nn.functional as F
 from torch_geometric.datasets.coseg import COSEG
 import torch_geometric.transforms as T
-from torch_geometric.transforms.face_to_edge import FaceToEdgeWithLabels
+from torch_geometric.transforms.face_to_edge import FaceToEdge
 from torch_geometric.data import DataLoader
-from torch_geometric.nn import GCNConv
-
-NUM_CLASSES = 4
+from torch_geometric.nn import GCNConv, global_mean_pool
 
 
 class CalcEdgeAttributesTransform(object):
@@ -18,9 +17,12 @@ class CalcEdgeAttributesTransform(object):
         print('shape', data.shape_id.item())
         edges = data.edge_index.t().contiguous()
         faces = data.face.t()
-        edge_attributes = np.empty([edges.shape[0], 5], dtype=np.float32)
+        edge_attributes = np.empty([len(edges), 5], dtype=np.float32)
         positions = data.pos
+        vertex_degrees = np.zeros([len(positions)], dtype=int)
         for c, edge in enumerate(edges):
+            vertex_degrees[edge[0]] += 1
+            vertex_degrees[edge[1]] += 1
             incident_faces = [x for x in faces if edge[0] in x and edge[1] in x]
             assert 1 <= len(incident_faces) <= 2
             r = [x for x in incident_faces[0] if x != edge[0] and x != edge[1]][0]  # other point of face a
@@ -67,30 +69,39 @@ class CalcEdgeAttributesTransform(object):
             inner_angles = sorted(inner_angles)
             edge_ratios = sorted(edge_ratios)
             edge_attributes[c] = [dihedral_angle, *inner_angles, *edge_ratios]
-        data.edge_attr = torch.from_numpy(edge_attributes)
+
+        # make edge attributes to node attributes by averaging over all incident edges
+        vertex_attributes = np.zeros([positions.shape[0], 5], dtype=np.float32)
+        for edge, edge_attr in zip(edges, edge_attributes):
+            vertex_attributes[edge[0]] += edge_attr / vertex_degrees[edge[0]]
+            vertex_attributes[edge[1]] += edge_attr / vertex_degrees[edge[1]]
+        data.x = torch.from_numpy(vertex_attributes)
         return data
 
 
-def main():
+@click.command()
+@click.option('--epochs', default=100)
+@click.option('--lr', default=0.001)
+@click.option('--classification', default=1)
+def main(epochs, lr, classification):
     data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
     current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     run_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'runs', current_time)
-    pre_transform = T.Compose(
-        [T.NormalizeScale(), FaceToEdgeWithLabels(remove_faces=False), CalcEdgeAttributesTransform()])
-    train_dataset = COSEG(data_path, train=True, pre_transform=pre_transform)
-    test_dataset = COSEG(data_path, train=False, pre_transform=pre_transform)
+    pre_transform = T.Compose([T.NormalizeScale(), FaceToEdge(remove_faces=False), CalcEdgeAttributesTransform()])
+    train_dataset = COSEG(data_path, classification=classification, train=True, pre_transform=pre_transform)
+    test_dataset = COSEG(data_path, classification=classification, train=False, pre_transform=pre_transform)
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=1)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(device)
-    model = Net().to(device)
+    model = Net(train_dataset.num_classes).to(device)
 
     train_writer = SummaryWriter(run_path + '/train')
     test_writer = SummaryWriter(run_path + '/test')
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    for epoch in range(100):
+    for epoch in range(epochs):
         train_acc, train_loss = train(model, device, optimizer, train_loader)
         train_writer.add_scalar('accuracy', train_acc, epoch)
         train_writer.add_scalar('loss', train_loss, epoch)
@@ -109,17 +120,22 @@ def main():
 
 
 class Net(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes):
         super(Net, self).__init__()
-        self.conv1 = GCNConv(5, 16)
-        self.conv2 = GCNConv(16, 64)
-        self.conv3 = GCNConv(64, NUM_CLASSES)
+        self.conv1 = GCNConv(5, 32)
+        self.conv2 = GCNConv(32, 64)
+        self.conv3 = GCNConv(64, 128)
+        self.conv4 = GCNConv(128, 256)
+        self.fc1 = torch.nn.Linear(256, num_classes)
 
     def forward(self, data):
-        edge_index, x = data.edge_index, data.edge_attr
+        edge_index, x = data.edge_index, data.x
         x = F.relu(self.conv1(x, edge_index))
         x = F.relu(self.conv2(x, edge_index))
-        x = F.log_softmax(self.conv3(x, edge_index), dim=-1)
+        x = F.relu(self.conv3(x, edge_index))
+        x = F.relu(self.conv4(x, edge_index))
+        x = global_mean_pool(x, data.batch)
+        x = F.log_softmax(self.fc1(x), dim=-1)
         return x
 
 
@@ -132,7 +148,7 @@ def train(model, device, optimizer, train_loader):
         optimizer.zero_grad()
         pred = model(data.to(device))
         pred_class = pred.max(dim=-1)[1]
-        correct += pred_class.eq(data.y).sum().item() / data.num_edges
+        correct += pred_class.eq(data.y).sum().item() / len(data.y)
         output = F.nll_loss(pred, data.y)
         loss += output.item()
         output.backward()
@@ -148,7 +164,7 @@ def test(model, device, test_loader):
     for data in test_loader:
         pred = model(data.to(device))
         pred_class = pred.max(dim=-1)[1]
-        correct += pred_class.eq(data.y).sum().item() / data.num_edges
+        correct += pred_class.eq(data.y).sum().item() / len(data.y)
         output = F.nll_loss(pred, data.y)
         loss += output.item()
 
@@ -159,8 +175,9 @@ def predict(model, device, data, output_path):
     model.eval()
     pred = model(data.to(device))
     pred_class = pred.max(dim=-1)[1]
-    export_colored_mesh(data, data.y, output_path + '/' + str(data.shape_id.item()) + '_gt.off')
-    export_colored_mesh(data, pred_class, output_path + '/' + str(data.shape_id.item()) + '_pred.off')
+    print(data.shape_id.item(), 'gt:', data.y.cpu().item(), 'pred:', pred_class.item())
+    # export_colored_mesh(data, data.y, output_path + '/' + str(data.shape_id.item()) + '_gt.off')
+    # export_colored_mesh(data, pred_class, output_path + '/' + str(data.shape_id.item()) + '_pred.off')
 
 
 def export_colored_mesh(data, labels, output_path):
