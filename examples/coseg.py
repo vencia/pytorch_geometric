@@ -1,3 +1,4 @@
+import os
 import os.path as osp
 import numpy as np
 from datetime import datetime
@@ -10,6 +11,7 @@ import torch_geometric.transforms as T
 from torch_geometric.transforms.face_to_edge import FaceToEdge
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GCNConv, global_mean_pool
+from torch_geometric.nn.pool.mesh_pool import mesh_pool
 
 
 class CalcEdgeAttributesTransform(object):
@@ -80,13 +82,22 @@ class CalcEdgeAttributesTransform(object):
 
 
 @click.command()
-@click.option('--epochs', default=100)
+@click.option('--epochs', default=10)
 @click.option('--lr', default=0.001)
 @click.option('--classification', default=1)
-def main(epochs, lr, classification):
+@click.option('--pool', nargs=4, default=(5, 5, 5, 5))
+def main(epochs, lr, classification, pool):
+    print('pool', pool)
     data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
     current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     run_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'runs', current_time)
+    os.makedirs(run_path)
+    with open(run_path + '/arguments.txt', 'w') as f:
+        f.write('epochs {}\n'.format(epochs))
+        f.write('lr {}\n'.format(lr))
+        f.write('classification {}\n'.format(classification))
+        f.write('pool {}\n'.format(pool))
+
     pre_transform = T.Compose([T.NormalizeScale(), FaceToEdge(remove_faces=False), CalcEdgeAttributesTransform()])
     train_dataset = COSEG(data_path, classification=classification, train=True, pre_transform=pre_transform)
     test_dataset = COSEG(data_path, classification=classification, train=False, pre_transform=pre_transform)
@@ -95,11 +106,15 @@ def main(epochs, lr, classification):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(device)
-    model = Net(train_dataset.num_classes).to(device)
+    model = Net(train_dataset.num_classes, pool).to(device)
 
     train_writer = SummaryWriter(run_path + '/train')
     test_writer = SummaryWriter(run_path + '/test')
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    for c, data in enumerate(train_loader):
+        if data.shape_id.cpu().item() in [0, 1, 2]:
+            export_colored_mesh(data, color=0, output_path=run_path + '/train/' + str(data.shape_id.item()) + '_gt.off')
 
     for epoch in range(epochs):
         train_acc, train_loss = train(model, device, optimizer, train_loader)
@@ -113,15 +128,18 @@ def main(epochs, lr, classification):
     train_writer.close()
     test_writer.close()
 
-    for data in train_loader:
-        predict(model, device, data, run_path + '/train')
-    for data in test_loader:
-        predict(model, device, data, run_path + '/test')
+    for c, data in enumerate(train_loader):
+        if data.shape_id.cpu().item() in [0, 1, 2]:
+            pred_class = predict(model, device, data)
+            data.face = None
+            export_colored_mesh(data, color=1,
+                                output_path=run_path + '/train/' + str(data.shape_id.item()) + '_pred.off')
 
 
 class Net(torch.nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self, num_classes, pool):
         super(Net, self).__init__()
+        self.pool = pool
         self.conv1 = GCNConv(5, 32)
         self.conv2 = GCNConv(32, 64)
         self.conv3 = GCNConv(64, 128)
@@ -129,14 +147,21 @@ class Net(torch.nn.Module):
         self.fc1 = torch.nn.Linear(256, num_classes)
 
     def forward(self, data):
-        edge_index, x = data.edge_index, data.x
-        x = F.relu(self.conv1(x, edge_index))
-        x = F.relu(self.conv2(x, edge_index))
-        x = F.relu(self.conv3(x, edge_index))
-        x = F.relu(self.conv4(x, edge_index))
-        x = global_mean_pool(x, data.batch)
-        x = F.log_softmax(self.fc1(x), dim=-1)
-        return x
+        data.x = F.relu(self.conv1(data.x, data.edge_index))
+        for _ in range(self.pool[0]):
+            data = mesh_pool(data)
+        data.x = F.relu(self.conv2(data.x, data.edge_index))
+        for _ in range(self.pool[1]):
+            data = mesh_pool(data)
+        data.x = F.relu(self.conv3(data.x, data.edge_index))
+        for _ in range(self.pool[2]):
+            data = mesh_pool(data)
+        data.x = F.relu(self.conv4(data.x, data.edge_index))
+        for _ in range(self.pool[3]):
+            data = mesh_pool(data)
+        data.x = global_mean_pool(data.x, data.batch)
+        data.x = F.log_softmax(self.fc1(data.x), dim=-1)
+        return data.x
 
 
 def train(model, device, optimizer, train_loader):
@@ -171,16 +196,44 @@ def test(model, device, test_loader):
     return correct / len(test_loader), loss / len(test_loader)
 
 
-def predict(model, device, data, output_path):
+def predict(model, device, data):
     model.eval()
     pred = model(data.to(device))
     pred_class = pred.max(dim=-1)[1]
     print(data.shape_id.item(), 'gt:', data.y.cpu().item(), 'pred:', pred_class.item())
-    # export_colored_mesh(data, data.y, output_path + '/' + str(data.shape_id.item()) + '_gt.off')
-    # export_colored_mesh(data, pred_class, output_path + '/' + str(data.shape_id.item()) + '_pred.off')
+    return pred_class
 
 
-def export_colored_mesh(data, labels, output_path):
+def export_colored_mesh(data, labels=None, color=None, output_path=None):
+    def get_incident_edges(edge, edges):
+        return [x for x in edges if not set(x).isdisjoint(set(edge)) and not x == edge]
+
+    def get_faces(edges):
+        edges = [tuple(x) for x in edges]
+        faces = set()
+        for e in edges:
+            i_edges = get_incident_edges(e, edges)
+            # sort so that first point of edge is common point with e
+            for c, ie in enumerate(i_edges):
+                if ie[1] in e:
+                    i_edges[c] = (ie[1], ie[0])
+
+            for ie1 in i_edges:
+                for ie2 in i_edges:
+                    if ie1 != ie2 and ie1[1] == ie2[1]:
+                        faces.add(tuple(sorted([e[0], e[1], ie1[1]])))
+        return faces
+
+        for c in cell_edges:
+            cell = []
+            for i in range(len(c)):
+                if c[i][0] in c[(i + 1) % len(c)]:
+                    cell.append(c[i][0])
+                else:
+                    cell.append(c[i][1])
+            if len(set(cell)) == 4:
+                faces.append(cell)
+
     def get_color(label):
         if label == 0:
             return ['0.0', '0.0', '1.0', '1.0']
@@ -194,14 +247,20 @@ def export_colored_mesh(data, labels, output_path):
 
     vertices = data.pos.cpu().numpy()
     edges = data.edge_index.t().cpu().numpy()
-    faces = data.face.t().cpu().numpy()
-    edge_labels = labels.cpu().numpy()
-
-    # edge labels to face labels
-    face_labels = []
-    for face in faces:
-        l = edge_labels[np.nonzero(np.all(edges == [face[0], face[1]], axis=1))[0][0]]
-        face_labels.append(l)
+    if data.face is not None:
+        faces = data.face.t().cpu().numpy()
+    else:
+        faces = get_faces(edges)
+    if color is not None:
+        # classification
+        face_labels = np.full([len(faces)], color)
+    else:
+        # edge labels to face labels
+        edge_labels = labels.cpu().numpy()
+        face_labels = []
+        for face in faces:
+            l = edge_labels[np.nonzero(np.all(edges == [face[0], face[1]], axis=1))[0][0]]
+            face_labels.append(l)
 
     # write off file
     lines = ['OFF']
