@@ -83,7 +83,7 @@ class CalcEdgeAttributesTransform(object):
 
 @click.command()
 @click.option('--epochs', default=10)
-@click.option('--lr', default=0.001)
+@click.option('--lr', default=0.0002)
 @click.option('--classification', default=1)
 @click.option('--pool', nargs=4, default=(5, 5, 5, 5))
 def main(epochs, lr, classification, pool):
@@ -113,7 +113,7 @@ def main(epochs, lr, classification, pool):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     for c, data in enumerate(train_loader):
-        if data.shape_id.cpu().item() in [0, 1, 2]:
+        if data.shape_id.cpu().item() < 10:
             export_colored_mesh(data, color=0, output_path=run_path + '/train/' + str(data.shape_id.item()) + '_gt.off')
 
     for epoch in range(epochs):
@@ -129,7 +129,7 @@ def main(epochs, lr, classification, pool):
     test_writer.close()
 
     for c, data in enumerate(train_loader):
-        if data.shape_id.cpu().item() in [0, 1, 2]:
+        if data.shape_id.cpu().item() < 10:
             pred_class = predict(model, device, data)
             data.face = None
             export_colored_mesh(data, color=1,
@@ -144,7 +144,8 @@ class Net(torch.nn.Module):
         self.conv2 = GCNConv(32, 64)
         self.conv3 = GCNConv(64, 128)
         self.conv4 = GCNConv(128, 256)
-        self.fc1 = torch.nn.Linear(256, num_classes)
+        self.fc1 = torch.nn.Linear(256, 100)
+        self.fc2 = torch.nn.Linear(100, num_classes)
 
     def forward(self, data):
         data.x = F.relu(self.conv1(data.x, data.edge_index))

@@ -1,4 +1,7 @@
-def mesh_pool(data):
+import torch
+
+
+def mesh_pool(data, aggr='max'):
     summed_attributes = data.x.sum(dim=-1)
     x_min = summed_attributes.min(dim=0)[1]
     x_neighbors = data.edge_index[1][(data.edge_index[0] == x_min).nonzero()].squeeze(dim=1)
@@ -18,7 +21,13 @@ def mesh_pool(data):
     # contract edge (x_min, y_min)
     # new node gets idx of x_min with updated edges, y_min gets dummy value and gets deleted from edges
     data.pos[x_min] = (data.pos[x_min] + data.pos[y_min]) / 2
-    new_node_attr = (data.x[x_min] + data.x[y_min]) / 2
+    if aggr == 'max':
+        new_node_attr = torch.max(data.x[x_min], data.x[y_min])
+    elif aggr == 'mean':
+        new_node_attr = (data.x[x_min] + data.x[y_min]) / 2
+    else:
+        assert aggr == 'add'
+        new_node_attr = data.x[x_min] + data.x[y_min]
     new_data_x = data.x.clone()  # TODO: make faster
     new_data_x[x_min] = new_node_attr
     new_data_x[y_min] = data.x.max()  # some high value # TODO: change, because then wrong global pooling etc.
