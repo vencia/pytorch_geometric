@@ -4,11 +4,11 @@ PROJECT_ROOT=$(dirname $(realpath "$0"))/..
 
 cd "$PROJECT_ROOT"
 
-PYTHONPATH=. python examples/coseg.py --epochs 100 --pool 0 0 0 0
-PYTHONPATH=. python examples/coseg.py --epochs 100 --pool 0 0 0 10
-PYTHONPATH=. python examples/coseg.py --epochs 100 --pool 10 0 0 0
-PYTHONPATH=. python examples/coseg.py --epochs 100 --pool 5 5 5 5
-PYTHONPATH=. python examples/coseg.py --epochs 100 --pool 10 10 10 10
+PYTHONPATH=. python examples/coseg.py --epochs 1000 --pool 0 0 0 0
+PYTHONPATH=. python examples/coseg.py --epochs 1000 --pool 0 0 0 10
+PYTHONPATH=. python examples/coseg.py --epochs 1000 --pool 10 0 0 0
+PYTHONPATH=. python examples/coseg.py --epochs 1000 --pool 5 5 5 5
+PYTHONPATH=. python examples/coseg.py --epochs 1000 --pool 10 10 10 10
 
 
 

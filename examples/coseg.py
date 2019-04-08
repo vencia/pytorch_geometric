@@ -149,17 +149,13 @@ class Net(torch.nn.Module):
 
     def forward(self, data):
         data.x = F.relu(self.conv1(data.x, data.edge_index))
-        for _ in range(self.pool[0]):
-            data = mesh_pool(data)
+        data = mesh_pool(data, self.pool[0])
         data.x = F.relu(self.conv2(data.x, data.edge_index))
-        for _ in range(self.pool[1]):
-            data = mesh_pool(data)
+        data = mesh_pool(data, self.pool[1])
         data.x = F.relu(self.conv3(data.x, data.edge_index))
-        for _ in range(self.pool[2]):
-            data = mesh_pool(data)
+        data = mesh_pool(data, self.pool[2])
         data.x = F.relu(self.conv4(data.x, data.edge_index))
-        for _ in range(self.pool[3]):
-            data = mesh_pool(data)
+        data = mesh_pool(data, self.pool[3])
         data.x = global_mean_pool(data.x, data.batch)
         data.x = F.log_softmax(self.fc1(data.x), dim=-1)
         return data.x
