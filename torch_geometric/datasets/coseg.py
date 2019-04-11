@@ -16,7 +16,7 @@ class COSEG(InMemoryDataset):
     def __init__(self,
                  root,
                  name='vases',
-                 classification=None,
+                 classification=None,  # 0: neck, 1: handle, 2: belly, 3: bottom
                  train=True,
                  transform=None,
                  pre_transform=None,
@@ -34,7 +34,7 @@ class COSEG(InMemoryDataset):
 
     @property
     def processed_file_names(self):
-        return ['training.pt', 'test.pt']
+        return ['training_c{}.pt'.format(self.classification), 'test_c{}.pt'.format(self.classification)]
 
     def download(self):
         off_path = download_url(self.urls[self.name][0], self.root)

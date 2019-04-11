@@ -89,8 +89,9 @@ class CalcEdgeAttributesTransform(object):
 def main(epochs, lr, classification, pool):
     print('pool', pool)
     data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
-    current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-    run_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'runs', current_time)
+    # current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+    arguments = 'c{}_e{}_lr{}_p{}'.format(classification, epochs, lr, '-'.join([str(x) for x in pool]))
+    run_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'runs', arguments)
     os.makedirs(run_path)
     with open(run_path + '/arguments.txt', 'w') as f:
         f.write('epochs {}\n'.format(epochs))
