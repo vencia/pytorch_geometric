@@ -48,10 +48,9 @@ class COSEG(InMemoryDataset):
             data = read_off(off_path)
             shape_id = osp.basename(off_path).rsplit('.', 1)[0]
             label_path = osp.join(self.raw_paths[1], shape_id + '.seg')
-            data.y = read_txt_array(label_path)
+            data.y = read_txt_array(label_path) - 1  # start from 0
             if self.classification is not None:
-                class_label = self.classification
-                if class_label in data.y:
+                if self.classification in data.y:
                     data.y = torch.tensor([1])
                 else:
                     data.y = torch.tensor([0])

@@ -84,7 +84,7 @@ class CalcEdgeAttributesTransform(object):
 @click.command()
 @click.option('--epochs', default=10)
 @click.option('--lr', default=0.0002)
-@click.option('--classification', default=1)
+@click.option('--classification', default=0)
 @click.option('--pool', nargs=4, default=(5, 5, 5, 5))
 def main(epochs, lr, classification, pool):
     print('pool', pool)
@@ -92,12 +92,7 @@ def main(epochs, lr, classification, pool):
     # current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     arguments = 'c{}_e{}_lr{}_p{}'.format(classification, epochs, lr, '-'.join([str(x) for x in pool]))
     run_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'runs', arguments)
-    os.makedirs(run_path)
-    with open(run_path + '/arguments.txt', 'w') as f:
-        f.write('epochs {}\n'.format(epochs))
-        f.write('lr {}\n'.format(lr))
-        f.write('classification {}\n'.format(classification))
-        f.write('pool {}\n'.format(pool))
+    os.makedirs(run_path, exist_ok=True)
 
     pre_transform = T.Compose([T.NormalizeScale(), FaceToEdge(remove_faces=False), CalcEdgeAttributesTransform()])
     train_dataset = COSEG(data_path, classification=classification, train=True, pre_transform=pre_transform)

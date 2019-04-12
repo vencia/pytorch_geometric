@@ -42,7 +42,7 @@ class FaceToEdgeWithLabels(FaceToEdge):
         for e_idx, e in enumerate(edge_index.t()):
             for f_idx, f in enumerate(face.t()):
                 if e[0] in f and e[1] in f:
-                    edge_labels[e_idx] = data.y[f_idx] - 1
+                    edge_labels[e_idx] = data.y[f_idx]
                     break
         data.y = edge_labels
         if self.remove_faces:
