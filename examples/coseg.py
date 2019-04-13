@@ -153,7 +153,8 @@ class Net(torch.nn.Module):
         data.x = F.relu(self.conv4(data.x, data.edge_index))
         data = mesh_pool(data, self.pool[3])
         data.x = global_mean_pool(data.x, data.batch)
-        data.x = F.log_softmax(self.fc1(data.x), dim=-1)
+        data.x = F.relu(self.fc1(data.x))
+        data.x = F.log_softmax(self.fc2(data.x), dim=-1)
         return data.x
 
 
