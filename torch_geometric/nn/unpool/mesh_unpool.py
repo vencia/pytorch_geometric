@@ -31,15 +31,16 @@ def mesh_unpool(data, count):
     top_k = torch.topk(data.x[face_t].sum(dim=-1).sum(dim=-1), count)[1]
     unpool_faces_t = face_t[top_k]
     unpool_faces_with_edge_idxs_t = torch.tensor([[x for x in range(len(edge_index_t)) if
-                                                   is_in(edge_index_t[x], f).all() and edge_index_t[x][
-                                                       0] <
+                                                   is_in(edge_index_t[x], f).all() and edge_index_t[x][0] <
                                                    edge_index_t[x][1]] for f in unpool_faces_t],
                                                  device=torch.device('cuda'))
 
     unique_edges, unique_edges_map = torch.unique(unpool_faces_with_edge_idxs_t.flatten(), return_inverse=True)
-    edge_mask = torch.zeros([len(edge_index_t)], dtype=torch.uint8)
+    edge_mask = torch.zeros([len(edge_index_t)], dtype=torch.uint8, device=torch.device('cuda'))
     edge_mask[unique_edges] = 1
-    unpool_edges_t = edge_index_t[edge_mask]
+    unpool_edges_t = edge_index_t[edge_mask]  # one-directional
+    other_dir_edge_mask = sum([(edge_index_t == x).all(-1) for x in other_direction(unpool_edges_t.t()).t()])
+    non_unpool_edges_t = edge_index_t[edge_mask + other_dir_edge_mask == 0].view(-1, 2)  # bidirectional
 
     # update nodes (features, pos, batch)
     new_node_features = data.x[unpool_edges_t].mean(dim=-2)
@@ -47,7 +48,7 @@ def mesh_unpool(data, count):
     new_x = torch.cat([data.x, new_node_features])
     new_pos = torch.cat([data.pos, new_node_positions])
     new_node_idxs = torch.arange(start=data.num_nodes, end=data.num_nodes + len(unpool_edges_t),
-                                 device=torch.torch.device('cuda'))
+                                 device=torch.device('cuda'))
     new_batch = torch.cat([data.batch, torch.full_like(new_node_idxs, data.batch[0])])  # only works for batchsize 1
 
     # update structure
@@ -56,14 +57,13 @@ def mesh_unpool(data, count):
     non_unpool_faces = (face_t[face_mask]).t()
     new_to_new_faces = unique_edges_map.view(len(unpool_faces_t), -1).t() + data.num_nodes
 
-    non_unpool_edges = edge_index_t[edge_mask == 0].t()
     old_to_new_edges1 = torch.stack([unpool_edges_t.t()[0], new_node_idxs])
     old_to_new_edges2 = torch.stack([unpool_edges_t.t()[1], new_node_idxs])
     new_to_new_edges = torch.cat([torch.stack([new_to_new_faces[0], new_to_new_faces[1]]),
                                   torch.stack([new_to_new_faces[0], new_to_new_faces[2]]),
                                   torch.stack([new_to_new_faces[1], new_to_new_faces[2]])], dim=-1)
     new_edge_index = torch.cat(
-        [non_unpool_edges, old_to_new_edges1, other_direction(old_to_new_edges1), old_to_new_edges2,
+        [non_unpool_edges_t.t(), old_to_new_edges1, other_direction(old_to_new_edges1), old_to_new_edges2,
          other_direction(old_to_new_edges2), new_to_new_edges, other_direction(new_to_new_edges)], dim=-1)
 
     old_to_new_faces = torch.tensor(
