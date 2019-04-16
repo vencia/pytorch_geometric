@@ -19,8 +19,14 @@ def other_direction(edges):
     return torch.stack([edges[1], edges[0]])
 
 
-def get_middle_node(edge_idx, unique_edges, data):
-    return (unique_edges == edge_idx).nonzero()[0][0] + data.num_nodes
+def get_border_faces_with_edges_t(num_borders, face_with_edges_t, face_borders_t):
+    # border edges before non-border edges
+    faces = [torch.cat([x[face_borders_t[c] == 1], x[face_borders_t[c] == 0]]) for c, x in
+             enumerate(face_with_edges_t) if sum(face_borders_t[c]) == num_borders]
+    if len(faces) > 0:
+        return torch.stack(faces)
+    else:
+        return None
 
 
 def mesh_unpool(data, count):
@@ -33,44 +39,29 @@ def mesh_unpool(data, count):
     face_t = data.face.t()
     edge_index_t = data.edge_index.t()
     face_with_edges_t = data.face_with_edges.t()
+
     top_k = torch.topk(data.x[face_t].sum(dim=-1).sum(dim=-1), count)[1]
-    unpool_faces_t = face_t[top_k]
     unpool_faces_with_edges_t = face_with_edges_t[top_k]
+    unpool_edge_idxs = torch.unique(unpool_faces_with_edges_t.flatten())
 
-    unique_edges, unique_edges_map = torch.unique(unpool_faces_with_edges_t.flatten(), return_inverse=True)
-
-    faces_border_edges_t = torch.stack([is_in(x, unique_edges) for x in face_with_edges_t])
-    try:
-        b1_faces_with_edges_t = torch.stack(
-            [torch.cat([x[faces_border_edges_t[c] == 1], x[faces_border_edges_t[c] == 0]]) for c, x in
-             enumerate(face_with_edges_t) if
-             sum(faces_border_edges_t[c]) == 1])  # border edges before non-border edges
-    except RuntimeError:
-        b1_faces_with_edges_t = None
-    try:
-        b2_faces_with_edges_t = torch.stack(
-            [torch.cat([x[faces_border_edges_t[c] == 1], x[faces_border_edges_t[c] == 0]]) for c, x in
-             enumerate(face_with_edges_t) if
-             sum(faces_border_edges_t[c]) == 2])  # border edges before non-border edges
-    except RuntimeError:
-        b2_faces_with_edges_t = None
-    try:
-        b3_faces_with_edges_t = torch.stack(
-            [torch.cat([x[faces_border_edges_t[c] == 1], x[faces_border_edges_t[c] == 0]]) for c, x in
-             enumerate(face_with_edges_t) if
-             sum(faces_border_edges_t[c]) == 3])  # border edges before non-border edges
-    except RuntimeError:
-        b3_faces_with_edges_t = None
+    face_borders_t = torch.stack([is_in(x, unpool_edge_idxs) for x in face_with_edges_t])
+    b1_faces_with_edges_t = get_border_faces_with_edges_t(1, face_with_edges_t, face_borders_t)
+    b2_faces_with_edges_t = get_border_faces_with_edges_t(2, face_with_edges_t, face_borders_t)
+    b3_faces_with_edges_t = get_border_faces_with_edges_t(3, face_with_edges_t, face_borders_t)
     assert len(b3_faces_with_edges_t) == len(unpool_faces_with_edges_t)
 
-    # b1_faces_with_edges_t = None
-    # b2_faces_with_edges_t = None
-
     edge_mask = torch.zeros([len(edge_index_t)], dtype=torch.uint8, device=torch.device('cuda'))
-    edge_mask[unique_edges] = 1
+    edge_mask[unpool_edge_idxs] = 1
     unpool_edges_t = edge_index_t[edge_mask]  # one-directional
     other_dir_edge_mask = sum([(edge_index_t == x).all(-1) for x in other_direction(unpool_edges_t.t()).t()])
     non_unpool_edges_t = edge_index_t[edge_mask + other_dir_edge_mask == 0].view(-1, 2)  # bidirectional
+
+    edge_to_middle_point_dict = {}
+    middle_point_to_edge_dict = {}
+    for c, e in enumerate(unpool_edge_idxs):
+        mp = c + data.num_nodes
+        edge_to_middle_point_dict[e.item()] = torch.tensor(mp, device=torch.device('cuda'))
+        middle_point_to_edge_dict[mp] = e
 
     # update nodes (features, pos, batch)
     new_node_features = data.x[unpool_edges_t].mean(dim=-2)
@@ -82,7 +73,10 @@ def mesh_unpool(data, count):
     new_batch = torch.cat([data.batch, torch.full_like(new_node_idxs, data.batch[0])])  # only works for batchsize 1
 
     # update pooling faces structure
-    new_to_new_faces = unique_edges_map.view(len(unpool_faces_t), -1).t() + data.num_nodes
+    new_to_new_faces = torch.stack([torch.stack(
+        [edge_to_middle_point_dict[x[0].item()], edge_to_middle_point_dict[x[1].item()],
+         edge_to_middle_point_dict[x[2].item()]]) for x in
+        unpool_faces_with_edges_t]).t()
 
     old_to_new_edges1 = torch.stack([unpool_edges_t.t()[0], new_node_idxs])
     old_to_new_edges2 = torch.stack([unpool_edges_t.t()[1], new_node_idxs])
@@ -91,12 +85,12 @@ def mesh_unpool(data, count):
                                   torch.stack([new_to_new_faces[1], new_to_new_faces[2]])], dim=-1)
 
     old_to_new_faces = torch.stack([torch.stack(
-        [get_common_node(unpool_edges_t[x[0] - data.num_nodes], unpool_edges_t[x[1] - data.num_nodes]), x[0], x[1]]) for
+        [get_common_node(edge_index_t[middle_point_to_edge_dict[x[0].item()]],
+                         edge_index_t[middle_point_to_edge_dict[x[1].item()]]), x[0], x[1]]) for
         x in new_to_new_edges.t()]).t()
 
     face_mask = torch.ones([len(face_t)], dtype=torch.uint8)
-    # face_mask[top_k] = 0
-    face_mask[faces_border_edges_t.sum(dim=-1) > 0] = 0
+    face_mask[face_borders_t.sum(dim=-1) > 0] = 0
     remaining_faces = (face_t[face_mask]).t()
     new_edge_index = torch.cat(
         [non_unpool_edges_t.t(), old_to_new_edges1, other_direction(old_to_new_edges1), old_to_new_edges2,
@@ -107,7 +101,8 @@ def mesh_unpool(data, count):
     if b1_faces_with_edges_t is not None:
         b1_edges = torch.stack(
             [torch.stack(
-                [get_middle_node(x[0], unique_edges, data), get_common_node(edge_index_t[x[1]], edge_index_t[x[2]])])
+                [edge_to_middle_point_dict[x[0].item()],
+                 get_common_node(edge_index_t[x[1]], edge_index_t[x[2]])])
                 for c, x in enumerate(b1_faces_with_edges_t)]).t()
         b1_faces = torch.cat([torch.stack([torch.stack([edge_index_t[b1_faces_with_edges_t[c][0]][0], x[0], x[1]]),
                                            torch.stack([edge_index_t[b1_faces_with_edges_t[c][0]][1], x[0], x[1]])])
@@ -118,11 +113,12 @@ def mesh_unpool(data, count):
 
     if b2_faces_with_edges_t is not None:
         b2_new_to_new_edges = torch.stack(
-            [torch.stack([get_middle_node(x[0], unique_edges, data), get_middle_node(x[1], unique_edges, data)])
+            [torch.stack([edge_to_middle_point_dict[x[0].item()], edge_to_middle_point_dict[x[1].item()]])
              for c, x in enumerate(b2_faces_with_edges_t)]).t()
         b2_old_to_new_edges = torch.stack(
             [torch.stack(
-                [get_middle_node(x[0], unique_edges, data), get_common_node(edge_index_t[x[1]], edge_index_t[x[2]])])
+                [edge_to_middle_point_dict[x[0].item()],
+                 get_common_node(edge_index_t[x[1]], edge_index_t[x[2]])])
                 for c, x in enumerate(b2_faces_with_edges_t)]).t()
         b2_new_to_new_faces = torch.stack(
             [torch.stack(
@@ -147,8 +143,8 @@ def mesh_unpool(data, count):
     data.face = new_face
 
     # mesh visualization attributes
-    num_border_faces = (b1_faces.shape[1] if b1_faces_with_edges_t is not None else 0)
-    + (b2_new_to_new_faces.shape[1] + b2_old_to_new_faces.shape[1] if b2_faces_with_edges_t is not None else 0)
+    num_border_faces = (b1_faces.shape[1] if b1_faces_with_edges_t is not None else 0) + (
+        b2_new_to_new_faces.shape[1] + b2_old_to_new_faces.shape[1] if b2_faces_with_edges_t is not None else 0)
 
     data.face_attr = torch.zeros([data.face.shape[1]], dtype=torch.uint8)
     data.face_attr[- old_to_new_faces.shape[1] - new_to_new_faces.shape[1] - num_border_faces: - num_border_faces] = 1
