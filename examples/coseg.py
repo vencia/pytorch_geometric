@@ -14,9 +14,9 @@ from torch_geometric.nn.pool.mesh_pool import mesh_pool
 from torch_geometric.nn.unpool.mesh_unpool import mesh_unpool
 
 
-class CalcEdgeAttributesTransform(object):
+class CalcEdgeFeaturesTransform(object):
     def __call__(self, data):
-        print('shape', data.shape_id.item())
+        print('calculate features for shape', data.shape_id.item())
         edges = data.edge_index.t().contiguous()
         faces = data.face.t()
         edge_attributes = np.empty([len(edges), 5], dtype=np.float32)
@@ -81,6 +81,22 @@ class CalcEdgeAttributesTransform(object):
         return data
 
 
+class AddMeshStructureTransform(object):
+    def __call__(self, data):
+        def is_in(ar1, ar2):
+            return (ar1[..., None] == ar2).any(-1)
+
+        print('add mesh structure for shape', data.shape_id.item())
+        face_t = data.face.t()
+        edge_index_t = data.edge_index.t()
+        face_with_edges_t = torch.tensor([[x for x in range(len(edge_index_t)) if
+                                           is_in(edge_index_t[x], f).all() and edge_index_t[x][0] <
+                                           edge_index_t[x][1]] for f in face_t],
+                                         device=torch.device('cuda'))
+        data.face_with_edges = face_with_edges_t.t()
+        return data
+
+
 @click.command()
 @click.option('--epochs', default=1)
 @click.option('--lr', default=0.001)
@@ -93,7 +109,9 @@ def main(epochs, lr, classification, pool):
     run_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'runs', arguments)
     os.makedirs(run_path, exist_ok=True)
 
-    pre_transform = T.Compose([T.NormalizeScale(), FaceToEdge(remove_faces=False), CalcEdgeAttributesTransform()])
+    # pre_filter = lambda x: x.shape_id.item() < 10
+    pre_transform = T.Compose(
+        [T.NormalizeScale(), FaceToEdge(remove_faces=False), CalcEdgeFeaturesTransform(), AddMeshStructureTransform()])
     train_dataset = COSEG(data_path, classification=classification, train=True, pre_transform=pre_transform)
     test_dataset = COSEG(data_path, classification=classification, train=False, pre_transform=pre_transform)
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
@@ -273,6 +291,7 @@ def export_colored_mesh(data, labels=None, color=None, output_path=None):
     if 'face_attr' in data.keys:
         face_attr = data.face_attr.numpy()
         face_labels[face_attr == 1] = 2
+        face_labels[face_attr == 2] = 0
 
     # write off file
     lines = ['OFF']
