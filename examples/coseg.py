@@ -1,7 +1,6 @@
 import os
 import os.path as osp
 import numpy as np
-from datetime import datetime
 import click
 from tensorboardX import SummaryWriter
 import torch
@@ -12,6 +11,7 @@ from torch_geometric.transforms.face_to_edge import FaceToEdge
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GCNConv, global_mean_pool
 from torch_geometric.nn.pool.mesh_pool import mesh_pool
+from torch_geometric.nn.unpool.mesh_unpool import mesh_unpool
 
 
 class CalcEdgeAttributesTransform(object):
@@ -82,14 +82,13 @@ class CalcEdgeAttributesTransform(object):
 
 
 @click.command()
-@click.option('--epochs', default=10)
-@click.option('--lr', default=0.0002)
-@click.option('--classification', default=0)
-@click.option('--pool', nargs=4, default=(5, 5, 5, 5))
+@click.option('--epochs', default=1)
+@click.option('--lr', default=0.001)
+@click.option('--classification', default=1)  # 0: neck, 1: handle, 2: belly, 3: bottom
+@click.option('--pool', nargs=4, default=(10, 0, 0, 0))
 def main(epochs, lr, classification, pool):
     print('pool', pool)
     data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
-    # current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     arguments = 'c{}_e{}_lr{}_p{}'.format(classification, epochs, lr, '-'.join([str(x) for x in pool]))
     run_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'runs', arguments)
     os.makedirs(run_path, exist_ok=True)
@@ -108,9 +107,7 @@ def main(epochs, lr, classification, pool):
     test_writer = SummaryWriter(run_path + '/test')
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    for c, data in enumerate(train_loader):
-        if data.shape_id.cpu().item() < 10:
-            export_colored_mesh(data, color=0, output_path=run_path + '/train/' + str(data.shape_id.item()) + '_gt.off')
+    visualize_gt(10, train_loader, test_loader, run_path)
 
     for epoch in range(epochs):
         train_acc, train_loss = train(model, device, optimizer, train_loader)
@@ -124,12 +121,7 @@ def main(epochs, lr, classification, pool):
     train_writer.close()
     test_writer.close()
 
-    for c, data in enumerate(train_loader):
-        if data.shape_id.cpu().item() < 10:
-            pred_class = predict(model, device, data)
-            data.face = None
-            export_colored_mesh(data, color=1,
-                                output_path=run_path + '/train/' + str(data.shape_id.item()) + '_pred.off')
+    visualize_pred(10, train_loader, test_loader, run_path, model, device)
 
 
 class Net(torch.nn.Module):
@@ -145,13 +137,13 @@ class Net(torch.nn.Module):
 
     def forward(self, data):
         data.x = F.relu(self.conv1(data.x, data.edge_index))
-        data = mesh_pool(data, self.pool[0])
+        data = mesh_unpool(data, self.pool[0])
         data.x = F.relu(self.conv2(data.x, data.edge_index))
-        data = mesh_pool(data, self.pool[1])
+        data = mesh_unpool(data, self.pool[1])
         data.x = F.relu(self.conv3(data.x, data.edge_index))
-        data = mesh_pool(data, self.pool[2])
+        data = mesh_unpool(data, self.pool[2])
         data.x = F.relu(self.conv4(data.x, data.edge_index))
-        data = mesh_pool(data, self.pool[3])
+        data = mesh_unpool(data, self.pool[3])
         data.x = global_mean_pool(data.x, data.batch)
         data.x = F.relu(self.fc1(data.x))
         data.x = F.log_softmax(self.fc2(data.x), dim=-1)
@@ -196,6 +188,28 @@ def predict(model, device, data):
     pred_class = pred.max(dim=-1)[1]
     print(data.shape_id.item(), 'gt:', data.y.cpu().item(), 'pred:', pred_class.item())
     return pred_class
+
+
+def visualize_gt(count, train_loader, test_loader, run_path):
+    for c, data in enumerate(train_loader):
+        if data.shape_id.cpu().item() < count:
+            export_colored_mesh(data, color=0, output_path=run_path + '/train/' + str(data.shape_id.item()) + '_gt.off')
+    for c, data in enumerate(test_loader):
+        if data.shape_id.cpu().item() < count:
+            export_colored_mesh(data, color=0, output_path=run_path + '/test/' + str(data.shape_id.item()) + '_gt.off')
+
+
+def visualize_pred(count, train_loader, test_loader, run_path, model, device):
+    for c, data in enumerate(train_loader):
+        if data.shape_id.cpu().item() < count:
+            pred_class = predict(model, device, data)
+            export_colored_mesh(data, color=1,
+                                output_path=run_path + '/train/' + str(data.shape_id.item()) + '_pred.off')
+    for c, data in enumerate(test_loader):
+        if data.shape_id.cpu().item() < count:
+            pred_class = predict(model, device, data)
+            export_colored_mesh(data, color=1,
+                                output_path=run_path + '/test/' + str(data.shape_id.item()) + '_pred.off')
 
 
 def export_colored_mesh(data, labels=None, color=None, output_path=None):
@@ -255,6 +269,10 @@ def export_colored_mesh(data, labels=None, color=None, output_path=None):
         for face in faces:
             l = edge_labels[np.nonzero(np.all(edges == [face[0], face[1]], axis=1))[0][0]]
             face_labels.append(l)
+
+    if 'face_attr' in data.keys:
+        face_attr = data.face_attr.numpy()
+        face_labels[face_attr == 1] = 2
 
     # write off file
     lines = ['OFF']
