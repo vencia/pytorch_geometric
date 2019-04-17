@@ -107,7 +107,9 @@ def main(epochs, lr, classification, pool):
     data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
     arguments = 'c{}_e{}_lr{}_p{}'.format(classification, epochs, lr, '-'.join([str(x) for x in pool]))
     run_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'runs', arguments)
-    os.makedirs(run_path, exist_ok=True)
+    if os.path.exists(run_path):
+        os.remove(run_path)
+    os.makedirs(run_path)
 
     # pre_filter = lambda x: x.shape_id.item() < 10
     pre_transform = T.Compose(
