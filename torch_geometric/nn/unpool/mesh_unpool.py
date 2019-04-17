@@ -41,15 +41,13 @@ def mesh_unpool(data, count):
     face_edges = data.face_edges.t()
 
     top_k = torch.topk(data.x[faces].sum(dim=-1).sum(dim=-1), count)[1]
-    unpool_face_edges = face_edges[top_k]
-    unpool_edge_idxs = torch.unique(unpool_face_edges.flatten())
+    unpool_edge_idxs = torch.unique(face_edges[top_k].flatten())
     unpool_edges = edge_index[unpool_edge_idxs]
 
     face_borders = torch.stack([is_in(x, unpool_edge_idxs) for x in face_edges])
     b1_face_edges = get_border_face_edges(1, face_edges, face_borders)
     b2_face_edges = get_border_face_edges(2, face_edges, face_borders)
     b3_face_edges = get_border_face_edges(3, face_edges, face_borders)
-    assert len(b3_face_edges) == len(unpool_face_edges)
 
     edge2mp = {}  # edge idx to middle point idx dict
     mp2edge = {}  # middle point idx to edge idx dict
@@ -69,7 +67,7 @@ def mesh_unpool(data, count):
 
     # update pooling faces structure
     inner_faces = torch.stack([torch.stack(
-        [edge2mp[x[0].item()], edge2mp[x[1].item()], edge2mp[x[2].item()]]) for x in unpool_face_edges])
+        [edge2mp[x[0].item()], edge2mp[x[1].item()], edge2mp[x[2].item()]]) for x in b3_face_edges])
 
     outer_faces = torch.cat([torch.stack([
         torch.stack([get_common_node(edge_index[mp2edge[x[0].item()]], edge_index[mp2edge[x[1].item()]]), x[0], x[1]]),
