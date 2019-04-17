@@ -122,7 +122,7 @@ def main(epochs, lr, classification, pool):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(device)
-    model = Net(train_dataset.num_classes, pool).to(device)
+    model = Net(train_dataset.num_classes, pool, run_path).to(device)
 
     train_writer = SummaryWriter(run_path + '/train')
     test_writer = SummaryWriter(run_path + '/test')
@@ -142,13 +142,15 @@ def main(epochs, lr, classification, pool):
     train_writer.close()
     test_writer.close()
 
-    visualize_pred(10, train_loader, test_loader, run_path, model, device)
+    # visualize_pred(10, train_loader, test_loader, run_path, model, device)
 
 
 class Net(torch.nn.Module):
-    def __init__(self, num_classes, pool):
+    def __init__(self, num_classes, pool, run_path):
         super(Net, self).__init__()
         self.pool = pool
+        self.run_path = run_path
+
         self.conv1 = GCNConv(5, 32)
         self.conv2 = GCNConv(32, 64)
         self.conv3 = GCNConv(64, 128)
@@ -159,8 +161,18 @@ class Net(torch.nn.Module):
     def forward(self, data):
         data.x = F.relu(self.conv1(data.x, data.edge_index))
         data = mesh_unpool(data, self.pool[0])
+
+        if data.shape_id.cpu().item() < 10:
+            export_colored_mesh(data, color=1, output_path=self.run_path + '/train/' + str(
+                data.shape_id.item()) + '_p0_pred.off')
+
         data.x = F.relu(self.conv2(data.x, data.edge_index))
         data = mesh_unpool(data, self.pool[1])
+
+        if data.shape_id.cpu().item() < 10:
+            export_colored_mesh(data, color=1, output_path=self.run_path + '/train/' + str(
+                data.shape_id.item()) + '_p1_pred.off')
+
         data.x = F.relu(self.conv3(data.x, data.edge_index))
         data = mesh_unpool(data, self.pool[2])
         data.x = F.relu(self.conv4(data.x, data.edge_index))
