@@ -1,5 +1,6 @@
 import os
 import os.path as osp
+import shutil
 import numpy as np
 import click
 from tensorboardX import SummaryWriter
@@ -89,11 +90,11 @@ class AddMeshStructureTransform(object):
         print('add mesh structure for shape', data.shape_id.item())
         face_t = data.face.t()
         edge_index_t = data.edge_index.t()
-        face_with_edges_t = torch.tensor([[x for x in range(len(edge_index_t)) if
-                                           is_in(edge_index_t[x], f).all() and edge_index_t[x][0] <
-                                           edge_index_t[x][1]] for f in face_t],
-                                         device=torch.device('cuda'))
-        data.face_with_edges = face_with_edges_t.t()
+        face_edges_t = torch.tensor([[x for x in range(len(edge_index_t)) if
+                                      is_in(edge_index_t[x], f).all() and edge_index_t[x][0] <
+                                      edge_index_t[x][1]] for f in face_t],
+                                    device=torch.device('cuda'))
+        data.face_edges = face_edges_t.t()
         return data
 
 
@@ -101,14 +102,14 @@ class AddMeshStructureTransform(object):
 @click.option('--epochs', default=1)
 @click.option('--lr', default=0.001)
 @click.option('--classification', default=1)  # 0: neck, 1: handle, 2: belly, 3: bottom
-@click.option('--pool', nargs=4, default=(10, 0, 0, 0))
+@click.option('--pool', nargs=4, default=(10, 10, 0, 0))
 def main(epochs, lr, classification, pool):
     print('pool', pool)
     data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
     arguments = 'c{}_e{}_lr{}_p{}'.format(classification, epochs, lr, '-'.join([str(x) for x in pool]))
     run_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'runs', arguments)
     if os.path.exists(run_path):
-        os.remove(run_path)
+        shutil.rmtree(run_path)
     os.makedirs(run_path)
 
     # pre_filter = lambda x: x.shape_id.item() < 10
