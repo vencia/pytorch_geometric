@@ -30,7 +30,7 @@ def mesh_unpool(data, count):
     if count == 0:
         return data
 
-    print(data.shape_id.item())
+    # print(data.shape_id.item())
     faces = data.face.t()
     edge_index = data.edge_index.t()
     face_edges = data.face_edges.t()

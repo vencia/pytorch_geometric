@@ -56,8 +56,8 @@ class COSEG(InMemoryDataset):
                     data.y = torch.tensor([0])
 
             data.shape_id = torch.tensor([int(shape_id)])
-            if int(shape_id) < 10:
-                data_list.append(data)
+            # if int(shape_id) < 10:
+            data_list.append(data)
 
         if self.pre_filter is not None:
             data_list = [d for d in data_list if self.pre_filter(d)]

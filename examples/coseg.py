@@ -142,7 +142,7 @@ def main(epochs, lr, classification, pool):
     train_writer.close()
     test_writer.close()
 
-    # visualize_pred(10, train_loader, test_loader, run_path, model, device)
+    visualize_pred(10, train_loader, test_loader, run_path, model, device)
 
 
 class Net(torch.nn.Module):
@@ -161,18 +161,8 @@ class Net(torch.nn.Module):
     def forward(self, data):
         data.x = F.relu(self.conv1(data.x, data.edge_index))
         data = mesh_unpool(data, self.pool[0])
-
-        if data.shape_id.cpu().item() < 10:
-            export_colored_mesh(data, color=1, output_path=self.run_path + '/train/' + str(
-                data.shape_id.item()) + '_p0_pred.off')
-
         data.x = F.relu(self.conv2(data.x, data.edge_index))
         data = mesh_unpool(data, self.pool[1])
-
-        if data.shape_id.cpu().item() < 10:
-            export_colored_mesh(data, color=1, output_path=self.run_path + '/train/' + str(
-                data.shape_id.item()) + '_p1_pred.off')
-
         data.x = F.relu(self.conv3(data.x, data.edge_index))
         data = mesh_unpool(data, self.pool[2])
         data.x = F.relu(self.conv4(data.x, data.edge_index))
