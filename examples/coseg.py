@@ -99,11 +99,12 @@ class AddMeshStructureTransform(object):
 
 
 @click.command()
-@click.option('--epochs', default=1)
-@click.option('--lr', default=0.001)
+@click.option('--epochs', default=80)
+@click.option('--lr', default=0.0002)
 @click.option('--classification', default=1)  # 0: neck, 1: handle, 2: belly, 3: bottom
-@click.option('--pool', nargs=4, default=(10, 10, 0, 0))
-def main(epochs, lr, classification, pool):
+@click.option('--pool', nargs=4, default=(0, 0, 0, 0))
+@click.option('--heatmap', is_flag=True)
+def main(epochs, lr, classification, pool, heatmap):
     print('pool', pool)
     data_path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'coseg', 'vases')
     arguments = 'c{}_e{}_lr{}_p{}'.format(classification, epochs, lr, '-'.join([str(x) for x in pool]))
@@ -122,13 +123,13 @@ def main(epochs, lr, classification, pool):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(device)
-    model = Net(train_dataset.num_classes, pool, run_path).to(device)
+    model = Net(train_dataset.num_classes, pool, run_path, heatmap).to(device)
 
     train_writer = SummaryWriter(run_path + '/train')
     test_writer = SummaryWriter(run_path + '/test')
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    visualize_gt(10, train_loader, test_loader, run_path)
+    visualize_gt(10, train_loader, test_loader, run_path, heatmap)
 
     for epoch in range(epochs):
         train_acc, train_loss = train(model, device, optimizer, train_loader)
@@ -146,10 +147,11 @@ def main(epochs, lr, classification, pool):
 
 
 class Net(torch.nn.Module):
-    def __init__(self, num_classes, pool, run_path):
+    def __init__(self, num_classes, pool, run_path, heatmap):
         super(Net, self).__init__()
         self.pool = pool
         self.run_path = run_path
+        self.heatmap = heatmap
 
         self.conv1 = GCNConv(5, 32)
         self.conv2 = GCNConv(32, 64)
@@ -167,6 +169,8 @@ class Net(torch.nn.Module):
         data = mesh_unpool(data, self.pool[2])
         data.x = F.relu(self.conv4(data.x, data.edge_index))
         data = mesh_unpool(data, self.pool[3])
+        if self.heatmap:
+            data.face_attr = data.x[data.face.t()].sum(dim=-1).sum(dim=-1)
         data.x = global_mean_pool(data.x, data.batch)
         data.x = F.relu(self.fc1(data.x))
         data.x = F.log_softmax(self.fc2(data.x), dim=-1)
@@ -213,13 +217,19 @@ def predict(model, device, data):
     return pred_class
 
 
-def visualize_gt(count, train_loader, test_loader, run_path):
+def visualize_gt(count, train_loader, test_loader, run_path, heatmap):
     for c, data in enumerate(train_loader):
         if data.shape_id.cpu().item() < count:
-            export_colored_mesh(data, color=0, output_path=run_path + '/train/' + str(data.shape_id.item()) + '_gt.off')
+            if heatmap:
+                data.face_attr = data.x[data.face.t()].sum(dim=-1).sum(dim=-1)
+            export_colored_mesh(data, color=0,
+                                output_path=run_path + '/train/' + str(data.shape_id.item()) + '_gt.off')
     for c, data in enumerate(test_loader):
         if data.shape_id.cpu().item() < count:
-            export_colored_mesh(data, color=0, output_path=run_path + '/test/' + str(data.shape_id.item()) + '_gt.off')
+            if heatmap:
+                data.face_attr = data.x[data.face.t()].sum(dim=-1).sum(dim=-1)
+            export_colored_mesh(data, color=0,
+                                output_path=run_path + '/test/' + str(data.shape_id.item()) + '_gt.off')
 
 
 def visualize_pred(count, train_loader, test_loader, run_path, model, device):
@@ -265,16 +275,26 @@ def export_colored_mesh(data, labels=None, color=None, output_path=None):
             if len(set(cell)) == 4:
                 faces.append(cell)
 
-    def get_color(label):
+    def label_color(label):
         if label == 0:
-            return ['0.0', '0.0', '1.0', '1.0']
+            return ['0.0', '0.0', '1.0']
         elif label == 1:
-            return ['0.0', '1.0', '0.0', '1.0']
+            return ['0.0', '1.0', '0.0']
         elif label == 2:
-            return ['1.0', '0.0', '0.0', '1.0']
+            return ['1.0', '0.0', '0.0']
         else:
             assert label == 3
-            return ['1.0', '1.0', '0.0', '1.0']
+            return ['1.0', '1.0', '0.0']
+
+    def heatmap_color(x, minimum, maximum):
+        def format(x):
+            return '%.3f' % round(x, 3)
+
+        ratio = 2 * (x - minimum) / (maximum - minimum)
+        b = max(0, (1 - ratio))
+        r = max(0, (ratio - 1))
+        g = 1.0 - b - r
+        return [format(r), format(g), format(b)]
 
     vertices = data.pos.cpu().numpy()
     edges = data.edge_index.t().cpu().numpy()
@@ -282,27 +302,35 @@ def export_colored_mesh(data, labels=None, color=None, output_path=None):
         faces = data.face.t().cpu().numpy()
     else:
         faces = get_faces(edges)
-    if color is not None:
-        # classification
-        face_labels = np.full([len(faces)], color)
-    else:
-        # edge labels to face labels
-        edge_labels = labels.cpu().numpy()
-        face_labels = []
-        for face in faces:
-            l = edge_labels[np.nonzero(np.all(edges == [face[0], face[1]], axis=1))[0][0]]
-            face_labels.append(l)
+    # if color is not None:
+    #     # classification
+    #     face_labels = np.full([len(faces)], color)
+    # else:
+    #     # edge labels to face labels
+    #     edge_labels = labels.cpu().numpy()
+    #     face_labels = []
+    #     for face in faces:
+    #         l = edge_labels[np.nonzero(np.all(edges == [face[0], face[1]], axis=1))[0][0]]
+    #         face_labels.append(l)
 
     if 'face_attr' in data.keys:
-        face_attr = data.face_attr.numpy()
-        face_labels[face_attr == 1] = 2
-        face_labels[face_attr == 2] = 0
+        face_attr = data.face_attr.detach().cpu().numpy()
+        if face_attr.dtype == np.float32:
+            face_labels = [heatmap_color(x, face_attr.min(), face_attr.max()) for x in face_attr]
+        else:
+            face_labels = [label_color(x) for x in face_attr]
+        # face_labels[face_attr == 0] = 1
+        # face_labels[face_attr == 1] = 2
+        # face_labels[face_attr == 2] = 0
+    else:
+        labels = np.full([len(faces)], color)
+        face_labels = [label_color(x) for x in labels]
 
     # write off file
     lines = ['OFF']
     lines.append('{} {} {}'.format(len(vertices), len(faces), len(edges)))
     lines += [' '.join(str(y) for y in x) for x in vertices]
-    lines += [' '.join(['3'] + [str(y) for y in x] + get_color(l)) for x, l in zip(faces, face_labels)]
+    lines += [' '.join(['3'] + [str(y) for y in x] + l) for x, l in zip(faces, face_labels)]
     with open(output_path, 'w') as f:
         f.write('\n'.join(lines))
 
