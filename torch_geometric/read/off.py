@@ -42,5 +42,5 @@ def face_to_tri(face):
 
 def read_off(path):
     with open(path, 'r') as f:
-        src = f.read().split('\n')[:-1]
+        src = f.read().split('\n')
     return parse_off(src)
